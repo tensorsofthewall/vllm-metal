@@ -22,7 +22,7 @@ import os
 import tempfile
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -56,6 +56,67 @@ def _ring_hosts(peer_ips: list[str]) -> list[list[str]]:
     return [[f"{ip}:{base_port + r}"] for r, ip in enumerate(peer_ips)]
 
 
+@runtime_checkable
+class PipelineTransport(Protocol):
+    """Point-to-point activation transport between pipeline stages.
+
+    ``send`` may be lazy or eager; it returns an array the caller will ``mx.eval``
+    (an eager transport returns an already-complete handle such as ``mx.array(0)``).
+    ``recv`` returns the received activation with exactly ``shape``/``dtype``; the
+    declared descriptor MUST match the sender's wire array. Stage ``r`` receives from
+    ``r - 1`` and sends to ``r + 1``.
+    """
+
+    rank: int
+    size: int
+
+    def send(self, x: mx.array, dst: int) -> mx.array: ...
+
+    def recv(self, shape: tuple[int, ...], dtype: mx.Dtype, src: int) -> mx.array: ...
+
+    def close(self) -> None: ...
+
+    # Optional (not part of the required protocol): ``begin_step(packed, scheduler_output)`` is called once per
+    # forward step, before any send/recv, with ``packed`` = [(req_id, n_tokens), ...] in this stage's packed row order
+    # and the vLLM ``SchedulerOutput``. Transports that exchange activations with a peer that packs rows differently
+    # use it to reorder rows; the default ring ignores it.
+
+
+class MlxRingPipelineTransport:
+    """The default transport: lazy ``mx.distributed`` send/recv over an MLX group."""
+
+    def __init__(self, group: Group) -> None:
+        self.group = group
+        self.rank: int = group.rank()
+        self.size: int = group.size()
+
+    def send(self, x: mx.array, dst: int) -> mx.array:
+        return mx.distributed.send(x, dst, group=self.group)
+
+    def recv(self, shape: tuple[int, ...], dtype: mx.Dtype, src: int) -> mx.array:
+        return mx.distributed.recv(shape, dtype, src, group=self.group)
+
+    def close(self) -> None:
+        return None
+
+
+def _resolve_transport_class(qualname: str) -> type:
+    import importlib
+
+    module_name, _, attr = qualname.rpartition(".")
+    if not module_name:
+        raise ValueError(
+            f"VLLM_METAL_PP_TRANSPORT_CLS={qualname!r} must be a 'package.module.Class' qualname"
+        )
+    try:
+        cls = getattr(importlib.import_module(module_name), attr)
+    except (ImportError, AttributeError) as exc:
+        raise ImportError(
+            f"Cannot load pipeline transport {qualname!r} (VLLM_METAL_PP_TRANSPORT_CLS): {exc}"
+        ) from exc
+    return cls
+
+
 class PipelineGroup:
     """Thin wrapper over an ``mx.distributed`` group with stage helpers.
 
@@ -65,12 +126,54 @@ class PipelineGroup:
     is BOTH the first and the last stage (straight-through, no comms).
     """
 
-    def __init__(self, group: Group) -> None:
+    def __init__(
+        self, group: Group | None, transport: PipelineTransport | None = None
+    ) -> None:
+        if transport is None:
+            if group is None:
+                raise ValueError(
+                    "PipelineGroup needs an mx.distributed group or a transport"
+                )
+            transport = MlxRingPipelineTransport(group)
         self.group = group
-        self.rank: int = group.rank()
-        self.size: int = group.size()
+        self.transport: PipelineTransport = transport
+        self.rank: int = transport.rank
+        self.size: int = transport.size
         self.is_first: bool = self.rank == 0
         self.is_last: bool = self.rank == self.size - 1
+
+    @classmethod
+    def bootstrap(
+        cls, rank: int, size: int, peer_ips: list[str] | None = None
+    ) -> PipelineGroup:
+        """Form the pipeline group: the MLX ring by default (``peer_ips`` required), or the
+        transport class named by ``VLLM_METAL_PP_TRANSPORT_CLS`` (constructed as
+        ``Class(rank=, size=, peer_ips=)``; ``peer_ips`` is ``None`` when the caller did not
+        discover node IPs, which only the ring needs)."""
+        qualname = envs.VLLM_METAL_PP_TRANSPORT_CLS
+        if not qualname:
+            if peer_ips is None:
+                raise ValueError("the MLX ring transport needs peer_ips")
+            return cls.bootstrap_ring(rank, peer_ips)
+        transport = _resolve_transport_class(qualname)(
+            rank=rank, size=size, peer_ips=None if peer_ips is None else list(peer_ips)
+        )
+        missing = [
+            n
+            for n in ("send", "recv", "close", "rank", "size")
+            if not hasattr(transport, n)
+        ]
+        if missing:
+            raise TypeError(
+                f"Pipeline transport {qualname!r} does not implement PipelineTransport (missing {missing})"
+            )
+        if transport.size != size or transport.rank != rank:
+            raise RuntimeError(
+                f"Pipeline transport {qualname!r} formed rank/size {transport.rank}/{transport.size}, "
+                f"expected {rank}/{size}"
+            )
+        logger.info("Pipeline transport %s: rank=%d/%d", qualname, rank, size)
+        return cls(None, transport)
 
     @classmethod
     def bootstrap_ring(cls, rank: int, peer_ips: list[str]) -> PipelineGroup:
@@ -210,7 +313,7 @@ def pipeline_recv(
     sender's wire array — a mismatch deadlocks (the ring backend does not
     validate across peers).
     """
-    wire = mx.distributed.recv((n_tokens, hidden), dtype, pp.rank - 1, group=pp.group)
+    wire = pp.transport.recv((n_tokens, hidden), dtype, pp.rank - 1)
     return wire[None]
 
 
@@ -229,7 +332,7 @@ def pipeline_send(h: mx.array, pp: PipelineGroup) -> mx.array:
             f"pipeline_send expects a (1, n_tokens, hidden) hidden state, "
             f"got shape {tuple(h.shape)}"
         )
-    return mx.distributed.send(h[0], pp.rank + 1, group=pp.group)
+    return pp.transport.send(h[0], pp.rank + 1)
 
 
 class PipelinedModel:

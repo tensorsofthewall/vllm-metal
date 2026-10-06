@@ -1557,6 +1557,16 @@ class MetalModelRunner:
                 # other stage hands its raw hidden state to pipeline_send, whose
                 # lazy op is forced by the async_eval below.
                 assert self._pp_model is not None
+                # Optional transport hook: tell the transport this step's packed layout (the
+                # ``[decode rows][prefill rows]`` request order and per-request token counts) and the
+                # scheduler output, before any activation crosses the stage boundary.
+                begin_step = getattr(self.pp.transport, "begin_step", None)
+                if begin_step is not None:
+                    begin_step(
+                        packed=[(rid, 1) for rid, _ in decode_reqs]
+                        + [(pr.req_id, len(pr.token_ids)) for pr in prefill_reqs],
+                        scheduler_output=scheduler_output,
+                    )
                 stage_output = self._pp_model(input_ids, cache=offset_caches)
                 if self.pp.is_last:
                     logits = self._extract_logits(stage_output)
