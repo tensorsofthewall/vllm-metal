@@ -130,6 +130,8 @@ if TYPE_CHECKING:
     VLLM_METAL_BUILD_FROM_SOURCE: bool = False
     VLLM_METAL_VISIBLE_DEVICES: str | None = None
     VLLM_METAL_RING_BASE_PORT: int = 32323
+    VLLM_METAL_PP_TRANSPORT_CLS: str | None = None
+    VLLM_METAL_DIST_BACKEND: str = "gloo"
     VLLM_METAL_KV_COMMIT_PROBE: bool = True
 
 environment_variables: dict[str, Callable[[], Any]] = {
@@ -243,6 +245,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
         minimum=1024,
         maximum=65535,
         note=" (the user-port range)",
+    ),
+    # Pipeline-parallel activation transport: python qualname (``pkg.mod.Class``) of a
+    # class implementing ``vllm_metal.distributed.PipelineTransport``. Unset (default)
+    # = the built-in MLX ring. The class is constructed as
+    # ``Class(rank=<stage>, size=<stages>, peer_ips=<list>)``.
+    "VLLM_METAL_PP_TRANSPORT_CLS": lambda: (
+        os.getenv("VLLM_METAL_PP_TRANSPORT_CLS") or None
+    ),
+    # torch.distributed backend for vLLM's own groups on the Metal worker (control
+    # plane). Default "gloo", unchanged; a pluggable transport may need another.
+    "VLLM_METAL_DIST_BACKEND": lambda: (
+        os.getenv("VLLM_METAL_DIST_BACKEND", "gloo") or "gloo"
     ),
     # Startup commit probe for the lazily allocated KV pool (default on).
     # The pool is not backed until a request writes a block, so a pool the

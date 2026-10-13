@@ -1884,7 +1884,7 @@ class TestV1MetalModelRunnerGDNSubmit:
             _paged_block_size=4,
             num_layers=0,
         )
-        runner.pp = SimpleNamespace(size=2, is_last=False)
+        runner.pp = SimpleNamespace(size=2, is_last=False, transport=SimpleNamespace())
         stage_output = mx.array([[[1.0]]], dtype=mx.float32)
         send_handle = mx.array([2.0], dtype=mx.float32)
         runner._pp_model = lambda input_ids, cache: stage_output
@@ -1936,7 +1936,7 @@ class TestV1MetalModelRunnerGDNSubmit:
         cache = self.make_gdn_cache()
         runtime = HybridRuntimeStub(cache)
         runner = make_stub_runner(_paged_attention_runtime=runtime)
-        runner.pp = SimpleNamespace(size=2, is_last=False)
+        runner.pp = SimpleNamespace(size=2, is_last=False, transport=SimpleNamespace())
         runner._execute_model_state = object()
         runner._request_states["done"] = mr.RequestState(
             token_ids=[1],
