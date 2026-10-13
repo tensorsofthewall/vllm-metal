@@ -37,6 +37,7 @@ from vllm.v1.outputs import (
 )
 from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase
 
+import vllm_metal.envs as envs
 from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT
 from vllm_metal.config import get_config
 from vllm_metal.distributed import PipelineGroup
@@ -65,7 +66,7 @@ def init_worker_distributed_environment(
         rank,
         distributed_init_method,
         local_rank,
-        backend="gloo",  # Use gloo for CPU-based distributed
+        backend=envs.VLLM_METAL_DIST_BACKEND,  # "gloo" unless overridden (control plane)
     )
 
     ensure_model_parallel_initialized(
@@ -168,9 +169,15 @@ class MetalWorker(WorkerBase):
             import torch.distributed as dist
             from vllm.utils.network_utils import get_ip
 
-            peer_ips: list[str] = [""] * self.parallel_config.world_size
-            dist.all_gather_object(peer_ips, get_ip())
-            self.pp = PipelineGroup.bootstrap_ring(self.rank, peer_ips)
+            peer_ips: list[str] | None = None
+            if not envs.VLLM_METAL_PP_TRANSPORT_CLS:
+                # Only the MLX ring needs every stage's node IP; a pluggable transport owns its own discovery
+                # (and must not be forced into a WORLD collective that other backends' workers never join).
+                peer_ips = [""] * self.parallel_config.world_size
+                dist.all_gather_object(peer_ips, get_ip())
+            self.pp = PipelineGroup.bootstrap(
+                self.rank, self.parallel_config.world_size, peer_ips
+            )
             logger.info(
                 "Pipeline stage %d/%d (is_first=%s, is_last=%s)",
                 self.pp.rank,

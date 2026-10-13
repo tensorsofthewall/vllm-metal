@@ -93,6 +93,8 @@ def test_a_bad_value_names_the_variable_and_the_value(
         ("VLLM_METAL_RING_BASE_PORT", "40000", 40000),
         ("VLLM_METAL_RING_BASE_PORT", "1024", 1024),
         ("VLLM_METAL_RING_BASE_PORT", "65535", 65535),
+        ("VLLM_METAL_PP_TRANSPORT_CLS", "pkg.mod.Class", "pkg.mod.Class"),
+        ("VLLM_METAL_DIST_BACKEND", "gloo", "gloo"),
         ("VLLM_METAL_MM_PREFIX_PATH", "recompute", "recompute"),
         ("VLLM_METAL_MULTIMODAL_MODE", "text-only", "text-only"),
         ("VLLM_MLX_DEVICE", "cpu", "cpu"),
