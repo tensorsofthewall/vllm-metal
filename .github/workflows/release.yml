@@ -3,6 +3,9 @@ name: Build and Release
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - '**/*.md'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       version:
