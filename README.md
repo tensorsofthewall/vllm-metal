@@ -1,3 +1,5 @@
+> **TBCCL fork.** This is a maintained fork of vllm-metal that carries one generic pluggable pipeline-parallel transport seam for [vllm-tbccl](https://github.com/tensorsofthewall/vllm-tbccl). Install the immutable tag `v0.31.0-tbccl1`, not `main`; see [TBCCL-FORK.md](TBCCL-FORK.md).
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/vllm-metal-dark.svg">
