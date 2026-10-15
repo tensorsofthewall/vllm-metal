@@ -1,0 +1,165 @@
+name: Fork wheel
+
+# Builds the installable wheel of a TBCCL integration tag (for example v0.31.0-tbccl1) on a macOS runner and keeps it as a workflow artifact. It is started by
+# hand only. It never creates or moves a tag, never touches a published release, and publishes nothing: with draft_release it creates a DRAFT release that a
+# maintainer reviews and publishes (or deletes) in the GitHub UI. The wheel version is the tag's base version plus a local label (0.31.0+tbccl1), so it cannot
+# be mistaken for the upstream vllm-metal release or the moving dev prerelease.
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: 'Integration tag to build, e.g. v0.31.0-tbccl1'
+        required: true
+        default: 'v0.31.0-tbccl1'
+        type: string
+      draft_release:
+        description: 'Also create a draft release named <source_tag>-wheel holding the wheel and SHA256SUMS'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-wheel-${{ inputs.source_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      SOURCE_TAG: ${{ inputs.source_tag }}
+    outputs:
+      version: ${{ steps.ident.outputs.version }}
+      commit: ${{ steps.ident.outputs.commit }}
+    steps:
+      - name: Validate the tag name
+        run: |
+          if [[ ! "$SOURCE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-tbccl([0-9]+)$ ]]; then
+            echo "::error::source_tag must look like v0.31.0-tbccl1, got ${SOURCE_TAG}."
+            exit 1
+          fi
+
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.source_tag }}
+          submodules: recursive
+
+      - name: Identify the build
+        id: ident
+        run: |
+          [[ "$SOURCE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-tbccl([0-9]+)$ ]]
+          base="${BASH_REMATCH[1]}"
+          version="${base}+tbccl${BASH_REMATCH[2]}"
+          project_version=$(python3 -c \
+            "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if [ "$project_version" != "$base" ]; then
+            echo "::error::pyproject version ${project_version} does not match ${SOURCE_TAG}."
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build the wheel
+        env:
+          VERSION: ${{ steps.ident.outputs.version }}
+        run: |
+          set -eu -o pipefail
+          source scripts/lib.sh
+          setup_dev_env
+          ensure_metal_toolchain
+          build_native_artifacts
+          sed -i '' -E "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          mkdir -p "$RUNNER_TEMP/wheel"
+          uv build --wheel --out-dir "$RUNNER_TEMP/wheel"
+          wheels=("$RUNNER_TEMP"/wheel/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
+            error "Expected exactly one wheel."
+            exit 1
+          fi
+          verify_wheel_artifacts "${wheels[0]}"
+
+      - name: Record checksums and build environment
+        env:
+          VERSION: ${{ steps.ident.outputs.version }}
+          COMMIT: ${{ steps.ident.outputs.commit }}
+        run: |
+          set -eu -o pipefail
+          source .venv-vllm-metal/bin/activate
+          cd "$RUNNER_TEMP/wheel"
+          shasum -a 256 ./*.whl | sed 's# \./# #' > SHA256SUMS
+          {
+            echo "wheel: $(ls ./*.whl | sed 's#\./##')"
+            echo "version: ${VERSION}"
+            echo "source tag: ${SOURCE_TAG}"
+            echo "source commit: ${COMMIT}"
+            echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+            echo "macOS: $(sw_vers -productVersion)"
+            echo "xcode: $(xcodebuild -version | tr '\n' ' ')"
+            echo "deployment target: ${MACOSX_DEPLOYMENT_TARGET}"
+            echo "python: $(python --version)"
+            echo "uv: $(uv --version)"
+            echo "mlx: $(python -c 'import importlib.metadata as m; print(m.version("mlx"))')"
+            echo "nanobind: $(python -c 'import importlib.metadata as m; print(m.version("nanobind"))')"
+          } > BUILD-INFO.txt
+          cat SHA256SUMS BUILD-INFO.txt
+
+      - name: Keep the build as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-wheel-${{ inputs.source_tag }}
+          path: |
+            ${{ runner.temp }}/wheel/*.whl
+            ${{ runner.temp }}/wheel/SHA256SUMS
+            ${{ runner.temp }}/wheel/BUILD-INFO.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  draft-release:
+    if: ${{ inputs.draft_release }}
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SOURCE_TAG: ${{ inputs.source_tag }}
+      VERSION: ${{ needs.build.outputs.version }}
+      COMMIT: ${{ needs.build.outputs.commit }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fork-wheel-${{ inputs.source_tag }}
+          path: dist
+      - name: Create the draft release
+        run: |
+          set -eu -o pipefail
+          release="${SOURCE_TAG}-wheel"
+          if gh release view "$release" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::A release named ${release} already exists; it is never overwritten."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${release}" > /dev/null 2>&1; then
+            echo "::error::A tag named ${release} already exists."
+            exit 1
+          fi
+          {
+            echo "Prebuilt wheel of the TBCCL integration tag \`${SOURCE_TAG}\` (commit \`${COMMIT}\`), version \`${VERSION}\`."
+            echo
+            echo "- Python 3.12, macOS 15+ on Apple silicon (arm64). Built on a GitHub macOS runner; the native extension is already compiled, so installing it compiles nothing."
+            echo "- Installs next to an existing vLLM \`0.31.0+cpu\` macOS wheel. It does not install vLLM."
+            echo "- Verify before installing: \`shasum -a 256 -c SHA256SUMS\`. Build environment: \`BUILD-INFO.txt\`."
+            echo "- Not an upstream vllm-metal release. Source and integration notes: the \`${SOURCE_TAG}\` tag."
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$release" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "${SOURCE_TAG} wheel (${VERSION})" --notes-file notes.md \
+            --target "$COMMIT" dist/*.whl dist/SHA256SUMS dist/BUILD-INFO.txt

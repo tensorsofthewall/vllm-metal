@@ -6,6 +6,7 @@ on:
     paths-ignore:
       - '**/*.md'
       - '.github/workflows/release.yml'
+      - '.github/workflows/fork-wheel.yml'
   workflow_dispatch:
     inputs:
       version:
