@@ -14,6 +14,8 @@ vllm-tbccl 0.2.0 is qualified against exactly this tag with vLLM 0.31.0. The tag
 
 ## Installing the TBCCL-compatible fork
 
+Install uv 0.13.4 or later first (0.13.5 is current; `brew install uv`, `pipx install uv`, or the [uv installer](https://docs.astral.sh/uv/getting-started/installation/)). The `scripts/lib.sh` of the tag `v0.31.0-tbccl1` installs uv 0.9.18 when no uv is on the `PATH`, and that release trusts the emSign roots that were revoked in October 2026 (see [Security](#security-emsign-ca-removal-october-2026)); with uv already installed the installer does not touch it.
+
 ```bash
 git clone --branch v0.31.0-tbccl1 --depth 1 https://github.com/tensorsofthewall/vllm-metal.git
 cd vllm-metal && ./install.sh
@@ -22,6 +24,15 @@ uv pip install --python .venv-vllm-metal/bin/python --no-deps https://github.com
 ```
 
 `./install.sh` run **from the checkout, without arguments**, installs vLLM 0.31.0's prebuilt macOS wheel, installs this checkout editable and builds the Metal artifacts, all in `.venv-vllm-metal` inside the checkout; the vllm-tbccl wheel then goes into that same environment (so vLLM, vllm-metal and vllm-tbccl are in one environment). Python 3.12 is required (the installer selects it). The Homebrew formula, the `curl | bash` installer and `install.sh --stable`/`--dev` outside a checkout install upstream vllm-metal and lack the seam. The installer needs Apple silicon, Xcode's command-line tools and the Metal toolchain; no prebuilt wheel of the fork exists yet and none is claimed. vllm-tbccl's [installation guide](https://vllm-tbccl.tensorsofthewall.com/en/latest/getting-started/install.html) covers the CUDA node and the launch.
+
+## Security: emSign CA removal (October 2026)
+
+Private keys of eight eMudhra intermediate certificates were reported compromised in October 2026 and the emSign roots were removed from the CA bundles used by Python tooling (certifi 2026.10.19, pip 26.2.2, uv 0.13.4). What it means here:
+
+- The fork pins no certifi, has no lockfile and ships no CA bundle: its Python dependencies are resolved when you install, so an installation made after 2026-10-20 gets certifi 2026.10.19 or later unless the environment already holds an older one.
+- The only affected item is the uv bootstrap in `scripts/lib.sh`, which the immutable tag `v0.31.0-tbccl1` cannot change (uv 0.9.18, installed only when no uv is found). The tag stays as it is. On `main`, `scripts/lib.sh` installs uv 0.13.5. Install uv 0.13.4 or later yourself before running the installer from the tag; if the installer already put uv 0.9.18 on a machine, upgrade it.
+- In any environment you create for this fork, make sure pip is 26.2.2 or later (`python -m pip install --upgrade pip`, or the hash-pinned wheel from the Python advisory when the installed pip is older) and certifi is 2026.10.19 or later.
+- The documentation build (Read the Docs) installs pip 26.2.2 from its hash-pinned wheel and uv 0.13.5.
 
 ## Provenance
 
