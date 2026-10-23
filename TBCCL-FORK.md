@@ -14,7 +14,7 @@ vllm-tbccl 0.2.0 is qualified against exactly this tag with vLLM 0.31.0. The tag
 
 ## Installing the TBCCL-compatible fork
 
-Install uv 0.13.4 or later first (0.13.5 is current; `brew install uv`, `pipx install uv`, or the [uv installer](https://docs.astral.sh/uv/getting-started/installation/)). The `scripts/lib.sh` of the tag `v0.31.0-tbccl1` installs uv 0.9.18 when no uv is on the `PATH`, and that release trusts the emSign roots that were revoked in October 2026 (see [Security](#security-emsign-ca-removal-october-2026)); with uv already installed the installer does not touch it.
+Install uv 0.13.4 or later first (0.13.5 is current; `brew install uv`, `pipx install uv`, or the [uv installer](https://docs.astral.sh/uv/getting-started/installation/)). The `scripts/lib.sh` of the tag `v0.31.0-tbccl1` installs uv 0.9.18 when no uv is on the `PATH`, and that release trusts the emSign root that was revoked in October 2026 (see [Security](#security-emsign-ca-removal-october-2026)); with uv already installed the installer does not touch it.
 
 ```bash
 git clone --branch v0.31.0-tbccl1 --depth 1 https://github.com/tensorsofthewall/vllm-metal.git
@@ -27,7 +27,7 @@ uv pip install --python .venv-vllm-metal/bin/python --no-deps https://github.com
 
 ## Security: emSign CA removal (October 2026)
 
-Private keys of eight eMudhra intermediate certificates were reported compromised in October 2026 and the emSign roots were removed from the CA bundles used by Python tooling (certifi 2026.10.19, pip 26.2.2, uv 0.13.4). What it means here:
+Private keys of eight eMudhra intermediate certificates were reported compromised in October 2026 and the affected emSign root (emSign ECC Root CA - G3) was removed from the CA bundles used by Python tooling (certifi 2026.10.19, pip 26.2.2, uv 0.13.4). What it means here:
 
 - The fork pins no certifi, has no lockfile and ships no CA bundle: its Python dependencies are resolved when you install, so an installation made after 2026-10-20 gets certifi 2026.10.19 or later unless the environment already holds an older one.
 - The only affected item is the uv bootstrap in `scripts/lib.sh`, which the immutable tag `v0.31.0-tbccl1` cannot change (uv 0.9.18, installed only when no uv is found). The tag stays as it is. On `main`, `scripts/lib.sh` installs uv 0.13.5. Install uv 0.13.4 or later yourself before running the installer from the tag; if the installer already put uv 0.9.18 on a machine, upgrade it.
