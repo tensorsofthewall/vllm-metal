@@ -64,7 +64,7 @@ require_arm64_python() {
 ensure_uv() {
   if ! command -v uv &> /dev/null; then
     echo "uv not found, installing..."
-    if ! curl -LsSf "https://astral.sh/uv/0.9.18/install.sh" | sh; then
+    if ! curl -LsSf "https://astral.sh/uv/0.13.5/install.sh" | sh; then
       error "Failed to install uv"
       return 1
     fi
